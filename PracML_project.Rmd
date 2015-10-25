@@ -1,0 +1,159 @@
+---
+title: "Prediction of Movement Quality of Personal Activity"
+output: html_document
+---
+
+## Abstract
+  
+In this report we derive a machine learning model to predict the quality of movement for a physical exercise from sensor data from sensors attached on the glove, arm, dumbbell and belt. The method used is random forest (genuinely containing cross-validation) for a reduced number of suitable predictors . An estimate for the error rate is around 1.1%.
+  
+## Version Details and Libraries
+
+Last modification: 25/10/2015.  
+In this report R version 3.1.2 was used. Apart from the base package, the machine learning library `caret` with its dependencies were built under the same version of R.
+
+```{r, message=F,warning=F}
+library(caret)
+library(randomForest)
+```
+
+## Data Import
+
+The reference to the data is given in the project description
+[https://class.coursera.org/predmachlearn-033/human_grading/view/courses/975203/assessments/4/submissions](https://class.coursera.org/predmachlearn-033/human_grading/view/courses/975203/assessments/4/submissions),   
+details on the data can be found under [http://groupware.les.inf.puc-rio.br/har](http://groupware.les.inf.puc-rio.br/har).
+
+```{r}
+setwd("/Users/leo/github/Practical_ML/")
+if( ! file.exists("training.csv")){
+    print("training data not found -> start download")
+    download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv",
+                  "training.csv",
+                  method="curl")
+}
+if(! file.exists("testing.csv")){
+    print("testing data not found -> start download")
+    download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv",
+                  "testing.csv",
+                  method="curl")
+}
+```
+
+The data is well formatted and imported by
+```{r}
+train <- read.csv("training.csv")
+test <- read.csv("testing.csv")
+```
+
+## Exploratory Data Analysis
+
+We first look at the dimensions of the data, where we see that the data set contains a large number of variables for 19622 measurements for 6 people (`user_name`), with a classification of 5 different types of movements (`classe`), and the test set has 20 cases to be predicted in terms of the same variables. As the set of possible predictors is large and we run the risk of overfitting in considering all, the main task below is to filter relevant predictors. The outcome in
+```{r}
+dim(train)
+levels(train$user_name)
+dim(test)
+```
+
+The data frames `train` and `test` contain the same variables except for the last column, where train contains the outcome `classe`, a factor with levels A, B, C, D and E indicating the movement. In `test` this last column is the problem ID, for which the outcome shall be predicted. Furthermore, some types of the variables deviate, which does not cause a problem, as these variables are not particularly relevent, as we will see below.
+
+```{r}
+column.deviation <- which(names(train) != names(test))
+names(train)[column.deviation]
+names(test)[column.deviation]
+```
+
+Furthermore, we see that 67 columns contain more than 90% missing values, and are therefore not well suited for prediction and are dropped in the preprocessing procedure below,
+```{r}
+# number of columns w/ more than 90% NA's
+length(colnames(train)[colSums(is.na(train)) > 9/10*length(train)]) 
+```
+
+
+## Preprocessing
+
+The preprocessing is done in the same way for the training and test set. First, we remove the columns with more than 90% missing values. As the last column deviates, it is left untouched.
+```{r}
+# less than 90% NA's in columns
+temp.train <- train[,1:159]
+cols.train.no.NA <- colnames(temp.train)[colSums(is.na(temp.train)) < 9/10*length(temp.train)] 
+train <- cbind(train[cols.train.no.NA],"classe"=train[,160])
+test <- cbind(test[cols.train.no.NA],"problem_id"=test[,160])
+rm(temp.train)
+```
+
+The size of the training set is large enough to split it further into a training and test set, where we can estimate the error of the model calibrated on the first subset and then test it on the latter one. 
+```{r}
+set.seed(123)
+index.train <- createDataPartition(train$classe, p=.85, list=F)
+train.train <- train[ index.train,]
+train.test  <- train[-index.train,]
+```
+
+
+## Building the Model
+
+In this section, we build a model to predict the quality of the movement. Aiming at a reasonably simple model while having a large number of variables at hand, we aim to find a balance of the different variables. This is achieved as is explained in the following.  
+First, we drop the measurement ID, test-subject and also time intervals, as they are not related to the movement. Note that the sensitivity to the test-subject was studied by including it too, however, it did not change the results quantitatively, i.e. the different movements are not subject specific but general to different persons.  
+Second, we consider only the main signals, i.e. we drop the measurements relating to `amplitude`, `total`, `stddev` (standard deviation, redundant to variance), `kurtosis`, `skewness` and the coordinates `_x`, `_y` and `_z`. 
+
+```{r}
+features <- names(train.train)[ ! grepl("X|user_name|window|time|amplitude|total|stddev|kurtosis|skewness|_x|_y|_z", names(train.train))]
+```
+
+Thus, we only consider the 12 features
+```{r}
+features
+train.train <- train.train[,features]
+train.test  <- train.test [,features]
+test <- test[,append(features[features!="classe"],"problem_id")]
+```
+
+These 12 predictors still form a rather large basis and we therefore use the accurate and flexible method of random forests for the model building. Also, this method includes cross-validation, hence increases the accuracy by this technique. We choose 5 resamplings. Note that we preprocess the data further by standardising them. The model is trained by
+
+```{r}
+set.seed(12345)
+model <- train( classe ~ . , data = train.train, method = "rf", preProcess = c("center","scale"), trControl = trainControl(method="cv",number=5))
+save(model,file="model.Rdata")
+```
+
+## Performance Estimates
+
+First, we look at the confusion matrix which shows how many missclassifications in the training part of the training set were done by the model. The in sample error rate is 1.06%.
+```{r}
+model$finalModel
+```
+
+The out of sample error rate is expected to be at least of the same order. We can get an unbiased estimate by applying the model to the test part of the training set. The out of sample error rate is given by the number of missclassifications divided by the number of measurements.
+```{r}
+sum( predict(model,newdata=train.test) != train.test$classe ) / length(train.test$classe)
+```
+
+In this case, the out of sample error is actually larger than the in sample error, however, of the same order. We thus expect the out of sample error to be larger than but close to 1.1%.
+
+
+## Prediction
+
+Now, we apply the model to the test set,
+```{r}
+test.predictions <- predict(model, test)
+test.predictions
+```
+
+The results are to be submitted in terms of separate text files containing the answer of the particular problem as one letter only. At the instruction page, the following function helps to create these 20 files given the answer vector.
+```{r}
+#function to write out predictions for submission
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+```
+
+We thus apply this function to our predictions
+```{r}
+pml_write_files(test.predictions)
+```
+
+The submission has to be done externally on the course homepage.
